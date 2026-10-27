@@ -1,0 +1,61 @@
+
+name: Monitoring and Logging CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  monitoring-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose config -q
+
+      - name: Validate Prometheus configuration
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.5.0 \
+            promtool check config /etc/prometheus/prometheus.yml
+
+      - name: Start monitoring stack
+        run: docker compose up -d
+
+      - name: Check service health
+        run: |
+          set -e
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:9090/-/healthy \
+              && curl -fsS http://localhost:3100/ready \
+              && curl -fsS http://localhost:3000/api/health \
+              && break; then
+              sleep 5
+            fi
+          done
+
+          curl -fsS http://localhost:9090/-/healthy
+          curl -fsS http://localhost:3100/ready
+          curl -fsS http://localhost:3000/api/health
+
+      - name: Verify Prometheus targets
+        run: |
+          curl -fsSG \
+            --data-urlencode 'query=up' \
+            http://localhost:9090/api/v1/query \
+            -o metrics.json
+
+          grep -q '"1"' metrics.json
+
+      - name: Show diagnostic logs if failed
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop monitoring stack
+        if: always()
+        run: docker compose down
