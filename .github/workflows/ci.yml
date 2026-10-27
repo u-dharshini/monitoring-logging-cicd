@@ -19,38 +19,60 @@ jobs:
       - name: Validate Prometheus configuration
         run: |
           docker run --rm \
+            --entrypoint=promtool \
             -v "$GITHUB_WORKSPACE/prometheus:/etc/prometheus:ro" \
             prom/prometheus:v3.5.0 \
-            promtool check config /etc/prometheus/prometheus.yml
+            check config /etc/prometheus/prometheus.yml
 
       - name: Start monitoring stack
         run: docker compose up -d
 
       - name: Check service health
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           for i in $(seq 1 30); do
-            if curl -fsS http://localhost:9090/-/healthy \
-              && curl -fsS http://localhost:3100/ready \
-              && curl -fsS http://localhost:3000/api/health \
-              && break; then
-              sleep 5
+            if curl -fsS http://localhost:9090/-/healthy >/dev/null \
+              && curl -fsS http://localhost:3100/ready >/dev/null \
+              && curl -fsS http://localhost:3000/api/health >/dev/null; then
+              echo "All services are healthy."
+              exit 0
             fi
+
+            echo "Waiting for services... attempt $i/30"
+            sleep 5
           done
 
-          curl -fsS http://localhost:9090/-/healthy
-          curl -fsS http://localhost:3100/ready
-          curl -fsS http://localhost:3000/api/health
+          echo "Service health checks failed."
+          exit 1
 
       - name: Verify Prometheus targets
+        shell: bash
         run: |
-          curl -fsSG \
-            --data-urlencode 'query=up' \
-            http://localhost:9090/api/v1/query \
-            -o metrics.json
+          set -euo pipefail
 
-          grep -q '"1"' metrics.json
+          for i in $(seq 1 12); do
+            if curl -fsSG \
+              --data-urlencode 'query=up' \
+              http://localhost:9090/api/v1/query \
+              -o metrics.json; then
+
+              if grep -q '"1"' metrics.json \
+                && grep -q '"status":"success"' metrics.json; then
+                echo "Prometheus returned successful query results."
+                cat metrics.json
+                exit 0
+              fi
+            fi
+
+            echo "Waiting for Prometheus targets... attempt $i/12"
+            sleep 5
+          done
+
+          echo "Prometheus target verification failed."
+          cat metrics.json || true
+          exit 1
 
       - name: Show diagnostic logs if failed
         if: failure()
